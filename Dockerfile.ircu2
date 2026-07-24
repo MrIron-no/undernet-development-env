@@ -1,45 +1,85 @@
-FROM alpine:3.21 AS build
+# syntax=docker/dockerfile:1
 
-RUN apk --no-cache update &&  \
-  apk --no-cache upgrade && \
-  apk --no-cache add \
-  build-base \
+FROM debian:trixie AS iauthd-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  build-essential \
+  autoconf \
+  automake \
+  autoconf-archive \
+  libtool \
+  pkgconf \
+  libevent-dev \
+  ca-certificates \
+  ccache \
+  rsync \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/docker-incremental-build.sh /usr/local/bin/docker-incremental-build.sh
+RUN chmod +x /usr/local/bin/docker-incremental-build.sh
+
+# Source from additional build context "iauthd" (./iauthd-c or IAUTHD_SRC).
+RUN --mount=type=bind,from=iauthd,source=.,target=/src-ro,ro \
+    --mount=type=cache,id=undernet-iauthd-work-v1,target=/work \
+    --mount=type=cache,id=undernet-iauthd-ccache-v1,target=/root/.ccache \
+    SRC_RO=/src-ro \
+    WORK=/work \
+    CONFIGURE_ARGS='--prefix=/opt/iauthd' \
+    docker-incremental-build.sh
+
+FROM debian:trixie AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  build-essential \
   autoconf \
   automake \
   libtool \
-  pkgconfig \
-  check-dev \
+  pkgconf \
+  check \
   file \
-  bison
+  bison \
+  libssl-dev \
+  ca-certificates \
+  ccache \
+  rsync \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY . /src
+COPY scripts/docker-incremental-build.sh /usr/local/bin/docker-incremental-build.sh
+RUN chmod +x /usr/local/bin/docker-incremental-build.sh
 
-RUN cd /src && \
-  ./configure --build="$(arch)-unknown-linux-gnu" \
-  --prefix=/ircd \
-  --with-cpath=/ircd/etc/ircd.conf \
-  --with-maxcon=1024 && \
-  make && \
-  make install && \
-  chmod 711 /ircd/bin/umkpasswd
+# Source comes from the "src" additional build context (./ircu2 or IRCU2_SRC).
+RUN --mount=type=bind,from=src,source=.,target=/src-ro,ro \
+    --mount=type=cache,id=undernet-ircu2-work-v3,target=/work \
+    --mount=type=cache,id=undernet-ircu2-ccache-v3,target=/root/.ccache \
+    SRC_RO=/src-ro \
+    WORK=/work \
+    CONFIGURE_ARGS='--build=$(arch)-unknown-linux-gnu --prefix=/ircd --with-cpath=/ircd/etc/ircd.conf --with-maxcon=1024 --with-tls=openssl' \
+    POST_INSTALL='chmod 711 /ircd/bin/umkpasswd' \
+    docker-incremental-build.sh
 
-CMD /bin/sh
+FROM debian:trixie-slim
 
-FROM alpine:3.17
-MAINTAINER ratler@undernet.org
+LABEL org.opencontainers.image.authors="ratler@undernet.org"
 
-EXPOSE 4400/tcp 6667/tcp 6669/tcp
+EXPOSE 4400/tcp 4440/tcp 6080/tcp 6443/tcp 6667/tcp 6669/tcp 6697/tcp
 
-RUN apk --no-cache update && \
-  apk --no-cache upgrade
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  libssl3t64 \
+  libevent-2.1-7t64 \
+  ca-certificates \
+  openssl \
+  && rm -rf /var/lib/apt/lists/*
 
-RUN addgroup -S ircd && \
-  adduser -D -S -s /sbin/nologin -G ircd ircd
+RUN groupadd -r ircd && useradd -r -s /usr/sbin/nologin -d /ircd -g ircd ircd
 
 COPY --from=build /ircd /ircd
+COPY --from=iauthd-build /opt/iauthd /opt/iauthd
+COPY scripts/ircd-entrypoint.sh /usr/local/bin/ircd-entrypoint.sh
 
-RUN chown -R ircd:ircd /ircd/lib
+RUN chown -R ircd:ircd /ircd/lib \
+  && mkdir -p /opt/iauthd/etc /opt/iauthd/var/log \
+  && chown -R ircd:ircd /opt/iauthd \
+  && chmod +x /usr/local/bin/ircd-entrypoint.sh
 
-USER ircd
 WORKDIR /ircd
-ENTRYPOINT ["/ircd/bin/ircd", "-n"]
+ENTRYPOINT ["/usr/local/bin/ircd-entrypoint.sh"]

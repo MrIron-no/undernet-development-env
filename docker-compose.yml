@@ -1,29 +1,49 @@
 services:
   hub:
     image: ircu2:latest
+    pull_policy: build
     hostname: hub.undernet.org
     build:
-      context: ircu2
-      dockerfile: ../Dockerfile.ircu2
+      context: .
+      dockerfile: Dockerfile.ircu2
+      additional_contexts:
+        src: ${IRCU2_SRC:-./ircu2}
+        iauthd: ${IAUTHD_SRC:-./iauthd-c}
+    environment:
+      IRCD_CERT_BASENAME: hub
+      IRCD_TLS_CN: hub.undernet.org
     ports:
       - "4400:4400"
+      - "4440:4440"
       - "6669:6669"
     volumes:
       - ./etc/hub.conf:/ircd/etc/ircd.conf
       - ./etc/hub.motd:/ircd/etc/motd
+      - ./etc/certs:/ircd/etc/certs
+      - ./etc/iauthd-c.conf:/opt/iauthd/etc/iauthd-c.conf
     networks:
       undernet:
         ipv4_address: 10.5.0.10
 
   leaf:
     image: ircu2:latest
+    pull_policy: never
     hostname: leaf.undernet.org
+    environment:
+      IRCD_CERT_BASENAME: leaf
+      IRCD_TLS_CN: leaf.undernet.org
     ports:
       - "4401:4400"
+      - "4441:4440"
       - "6667:6667"
+      - "6697:6697"
+      - "6080:6080"
+      - "6443:6443"
     volumes:
       - ./etc/leaf.conf:/ircd/etc/ircd.conf
       - ./etc/leaf.motd:/ircd/etc/motd
+      - ./etc/certs:/ircd/etc/certs
+      - ./etc/iauthd-c.conf:/opt/iauthd/etc/iauthd-c.conf
     depends_on:
       - hub
     networks:
@@ -32,9 +52,10 @@ services:
 
   api:
     #image: cservice-api:latest
+    profiles: [cservice]
     hostname: api.undernet.org
     build:
-      context: cservice-api
+      context: ${CSERVICE_API_SRC:-./cservice-api}
       dockerfile_inline: |
         # Stage 0: Extract CA certificates
         FROM alpine:latest AS certs
@@ -79,16 +100,16 @@ services:
         ipv4_address: 10.5.0.25
 
   db:
-    image: postgres:17-alpine
+    image: postgres:17-trixie
     hostname: db.undernet.org
     restart: always
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./dbinit:/docker-entrypoint-initdb.d
-      - ./cservice-web:/cservice-web
-      - ./gnuworld:/gnuworld
+      - ${CSERVICE_WEB_SRC:-./cservice-web}:/cservice-web
+      - ${GNUWORLD_SRC:-./gnuworld}:/gnuworld
     environment:
       - POSTGRES_DB=cservice
       - POSTGRES_USER=cservice
@@ -106,6 +127,7 @@ services:
         ipv4_address: 10.5.0.30
 
   redis:
+    profiles: [cservice]
     image: valkey/valkey:7.2-alpine
     hostname: redis.undernet.org
     restart: always
@@ -118,6 +140,7 @@ services:
         ipv4_address: 10.5.0.35
 
   mail:
+    profiles: [cservice]
     image: axllent/mailpit
     hostname: mail.undernet.org
     ports:
@@ -128,8 +151,9 @@ services:
         ipv4_address: 10.5.0.40
 
   web:
+    profiles: [cservice]
     build:
-      context: ./cservice-web
+      context: ${CSERVICE_WEB_SRC:-./cservice-web}
     ports:
       - "8080:80"
     environment:
@@ -147,7 +171,7 @@ services:
       - LOG_STREAM_HANDLER=php://stdout
       - SMTPHOST=mail.undernet.org:1025
     volumes:
-      - ./cservice-web:/app
+      - ${CSERVICE_WEB_SRC:-./cservice-web}:/app
     networks:
       undernet:
         ipv4_address: 10.5.0.50
@@ -161,13 +185,20 @@ services:
 
   gnuworld:
     image: gnuworld:latest
+    pull_policy: build
     hostname: channels.undernet.org
     #entrypoint: /bin/sh -c "while true; do sleep 1; done"
     build:
       context: .
       dockerfile: Dockerfile.gnuworld
+      additional_contexts:
+        src: ${GNUWORLD_SRC:-./gnuworld}
+    environment:
+      GNUWORLD_CERT_BASENAME: channels
+      GNUWORLD_TLS_CN: channels.undernet.org
     volumes:
       - ./etc/gnuworld:/gnuworld/etc
+      - ./etc/certs:/gnuworld/etc/certs
     networks:
       undernet:
         ipv4_address: 10.5.0.60
@@ -178,6 +209,7 @@ services:
         condition: service_started
       api:
         condition: service_healthy
+        required: false
 
 volumes:
   pgdata:

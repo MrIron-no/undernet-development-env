@@ -1,53 +1,59 @@
-FROM debian:13.1 AS build
+# syntax=docker/dockerfile:1
 
-RUN apt update && apt upgrade -y && apt install -y \
+FROM debian:trixie AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
   build-essential \
+  autoconf \
+  automake \
+  libtool \
   postgresql-common-dev \
   liboath-dev \
   libpq-dev \
-  liblog4cplus-2.0.5t64 \
   liblog4cplus-dev \
+  libpcre2-dev \
+  libssl-dev \
   pkgconf \
-  automake \
-  libltdl-dev
+  libltdl-dev \
+  ca-certificates \
+  ccache \
+  rsync \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY ./gnuworld /src
-#COPY ./patches /patches
+COPY scripts/docker-incremental-build.sh /usr/local/bin/docker-incremental-build.sh
+RUN chmod +x /usr/local/bin/docker-incremental-build.sh
 
-#RUN cd /src && patch -p0 < /patches/log4c-alpine-compat+log-paths.patch
-RUN cd /src && \
-  ./autogen.sh && \
-  ./configure \
-  --prefix=/gnuworld \
-  --enable-modules=cservice,ccontrol,openchanfix,dronescan \
-  --enable-ltdl-convenience \
-  --with-log4cplus \
-  --with-log4cplus-lib=$(pkgconf --variable=libdir log4cplus) \
-  --with-log4cplus-include=/usr/include \
-  --with-liboath-lib=/usr/lib && \ 
-  make -j4 && \
-  make install
+# Source comes from the "src" additional build context (./gnuworld or GNUWORLD_SRC).
+# Work tree + ccache are BuildKit caches so edits only trigger incremental make.
+RUN --mount=type=bind,from=src,source=.,target=/src-ro,ro \
+    --mount=type=cache,id=undernet-gnuworld-work-v2,target=/work \
+    --mount=type=cache,id=undernet-gnuworld-ccache-v2,target=/root/.ccache \
+    SRC_RO=/src-ro \
+    WORK=/work \
+    CONFIGURE_ARGS='--prefix=/gnuworld --enable-modules=cservice,ccontrol,openchanfix,dronescan,debug --enable-ltdl-convenience --with-log4cplus --with-log4cplus-lib=$(pkgconf --variable=libdir log4cplus) --with-log4cplus-include=/usr/include --with-liboath-lib=/usr/lib' \
+    docker-incremental-build.sh
 
-
-FROM debian:13.1
+FROM debian:trixie-slim
 
 EXPOSE 4400/tcp 6667/tcp 6669/tcp
 
-RUN apt update && apt upgrade -y && apt install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
   libpq5 \
   liblog4cplus-2.0.5t64 \
-  strace \
-  bind9-utils \
   liboath0t64 \
-  libltdl7
+  libltdl7 \
+  libpcre2-8-0 \
+  libssl3t64 \
+  openssl \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r gnuworld && useradd -r -s /usr/sbin/nologin -d /gnuworld -g gnuworld gnuworld
 
 COPY --from=build --chown=gnuworld:gnuworld /gnuworld /gnuworld
+COPY scripts/gnuworld-entrypoint.sh /usr/local/bin/gnuworld-entrypoint.sh
 
-RUN install -o gnuworld -g gnuworld -dm755 /gnuworld/log
+RUN install -o gnuworld -g gnuworld -dm755 /gnuworld/log \
+  && chmod +x /usr/local/bin/gnuworld-entrypoint.sh
 
-USER gnuworld
 WORKDIR /gnuworld/bin
-ENTRYPOINT ["./gnuworld", "-c", "-f", "/gnuworld/etc/gnuworld.conf"]
-
+ENTRYPOINT ["/usr/local/bin/gnuworld-entrypoint.sh"]

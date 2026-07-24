@@ -15,7 +15,7 @@ It includes the following services:
 - mail server (Mailpit)
 - cservice web portal
 - cservice API (REST API for cservice)
-- GNUworld (enabled modules: cservice, ccontrol, openchanfix, dronescan)
+- GNUworld (enabled modules: cservice, ccontrol, openchanfix, dronescan, debug)
 
 
 # Requirements to setup the environment
@@ -26,9 +26,8 @@ It includes the following services:
 
 # Getting started
 
-This project uses git submodules. After cloning this repository the submodules needs to be
-initialized and updated. Follow this step-by-step guide to get your new UnderNET environment
-up and running.
+Source trees can come from **git submodules** and/or **existing checkouts** on your machine
+(via a local `.env`). Both approaches can be mixed.
 
 ## Git Submodules
 
@@ -38,15 +37,90 @@ This repository includes the following submodules:
 - `cservice-web/` - PHP web interface
 - `gnuworld/` - C++ service bot framework
 - `ircu2/` - IRC server implementation
+- `iauthd-c/` - IRC authorization daemon (forked by ircd)
 
-## Setup Steps
+Fetch all of them:
 
 ```
 git clone https://github.com/Ratler/undernet-development-env.git
 cd undernet-development-env
-git submodule init
-git submodule update
-docker-compose up -d
+./scripts/init-submodules.sh
+```
+
+Or only the ones you need (skip trees you already have elsewhere):
+
+```
+./scripts/init-submodules.sh web          # cservice-web + cservice-api
+./scripts/init-submodules.sh irc          # ircu2 + gnuworld + iauthd-c
+./scripts/init-submodules.sh cservice-api # a single submodule by path
+```
+
+You can also pass paths directly to git:
+
+```
+git submodule update --init cservice-web cservice-api
+```
+
+## Using existing local checkouts
+
+Copy `.env.example` to `.env` and point at your trees:
+
+```
+cp .env.example .env
+```
+
+```
+IRCU2_SRC=/path/to/your/ircu2
+GNUWORLD_SRC=/path/to/your/gnuworld
+IAUTHD_SRC=/path/to/your/iauthd-c
+# CSERVICE_WEB_SRC=/path/to/your/cservice-web
+# CSERVICE_API_SRC=/path/to/your/cservice-api
+```
+
+Unset variables fall back to the submodule directories (`./ircu2`, `./gnuworld`, …).
+`.env` is gitignored.
+
+Builds use Docker Compose `additional_contexts`: the Dockerfile stays in this repo, while
+the C/C++ (or other) source is taken from the path you configured.
+
+## Optional cservice stack (api / web)
+
+`api`, `web`, `redis`, and `mail` use the Compose profile `cservice`. They are **not**
+started by a plain `docker compose up` unless that profile is active.
+
+| How | Effect |
+|-----|--------|
+| `./scripts/compose.sh up -d` | Auto-enables `cservice` when both api and web sources exist (`.env` paths or initialized submodules) |
+| `COMPOSE_PROFILES=cservice` in `.env` | Always start api/web/redis/mail |
+| `docker compose --profile cservice up -d` | Same, one-shot |
+| neither | Core only: hub, leaf, db, gnuworld |
+
+`gnuworld` waits for `api` only when the cservice profile is running (`required: false`).
+
+## Setup Steps
+
+**All from submodules:**
+
+```
+git clone https://github.com/Ratler/undernet-development-env.git
+cd undernet-development-env
+./scripts/init-submodules.sh
+./scripts/compose.sh up -d
+```
+
+**Example: local ircu2 + gnuworld only (no web/api):**
+
+```
+cp .env.example .env   # set IRCU2_SRC and GNUWORLD_SRC
+./scripts/compose.sh up -d
+```
+
+**Example: local ircu2 + gnuworld, submodules for web/api:**
+
+```
+./scripts/init-submodules.sh web
+cp .env.example .env   # set IRCU2_SRC and GNUWORLD_SRC
+./scripts/compose.sh up -d
 ```
 
 ## Service information (hosts, ports and login information)
@@ -55,9 +129,9 @@ The following ports below are mapped from your host to the container:
 
 | Service      | URL / ip:port                                        | Comments                                                                                                                                                                    |
 |--------------|------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| hub          | Server: localhost:4400 <br> Client: localhost:6669   | The default `/oper` username is `admin` with the password `admin`                                                                                                           |
-| leaf         | Server: localhost:4401 <br> Client: localhost:6667   | The default `/oper` username is `admin` with the password `admin`                                                                                                           |
-| db           | localhost:5432                                       | The default db username is `cservice` with the password `cservice`, works for all the databases. <br> Databases: `cservice`, `ccontrol`, `chanfix`, `dronescan`, `local_db` |
+| hub          | Server: localhost:4400 <br> TLS server: localhost:4440 <br> Client: localhost:6669 | The default `/oper` username is `admin` with the password `admin`. S2S links use TLS on 4440. Cert auto-generated into `etc/certs/` on first start. |
+| leaf         | Server: localhost:4401 <br> TLS server: localhost:4441 <br> Client: localhost:6667 <br> TLS client: localhost:6697 <br> WebSocket: localhost:6080 <br> WSS: localhost:6443 | The default `/oper` username is `admin` with the password `admin`. Self-signed certs in `etc/certs/` (accept/ignore in your client). |
+| db           | localhost:5433                                       | Host port 5433 → container 5432 (avoids clashing with a local Postgres). Default user/pass `cservice`/`cservice`. Databases: `cservice`, `ccontrol`, `chanfix`, `dronescan`, `local_db` |
 | redis        | localhost:6379                                       | Valkey - used for caching and session management. No authentication required.                                                                                               |
 | mail         | SMTP: localhost:1025 <br> WEB: http://localhost:8025 | Mailpit - captures e-mails from cservice-web and cservice-api, <br>e-mails can be accessed from the WEB url.                                                                |
 | cservice-web | http://localhost:8080                                | Default admin (level 1000) user is `Admin` with the password `temPass2020@`                                                                                                 |
@@ -76,25 +150,52 @@ or code change will be applied immediately.
 
 # Making code changes in ircu, gnuworld or cservice-api
 
-After making any code change in ircu, gnuworld or cservice-api the container needs to be rebuilt and restarted.
+After changing ircu, gnuworld or cservice-api, rebuild and restart the service.
 
 Rebuild ircu (hub and leaf share the same image):
 ```
-docker-compose up --build hub
-docker-compose up leaf
+docker compose up --build hub
+docker compose up leaf
 ```
 
 Rebuild and restart gnuworld:
 ```
-docker-compose up --build gnuworld
+docker compose up --build gnuworld
 ```
 
-Rebuild and restart cservice-api:
+Rebuild and restart cservice-api (requires the `cservice` profile):
 ```
-docker-compose up --build api
+docker compose --profile cservice up --build api
 ```
 
-For cservice-web, changes to configuration files in `cservice-web/php_includes` are reflected immediately without requiring a rebuild.
+For cservice-web, changes under `cservice-web` are reflected immediately (bind mount).
+
+## IAuth (iauthd-c)
+
+[iauthd-c](https://github.com/UndernetIRC/iauthd-c) is **not** a separate Compose
+service. ircd forks `/opt/iauthd/libexec/iauthd-c` over stdin/stdout when an
+`IAuth { ... }` block is present (see `etc/leaf.conf` and `etc/hub.conf`).
+
+- Binary + modules are built into the `ircu2` image (additional context `iauthd`)
+- Runtime config is bind-mounted from `etc/iauthd-c.conf`
+- Source path: submodule `./iauthd-c` or `IAUTHD_SRC` in `.env`
+
+After changing iauthd-c sources, rebuild the ircu image (`docker compose up --build hub`).
+Config-only edits: remount is live after `/rehash` on the IRC server (ircd respawns iauth).
+
+## Incremental C++ builds (ircu2 / gnuworld)
+
+`Dockerfile.ircu2` and `Dockerfile.gnuworld` use BuildKit cache mounts for the
+work tree and `ccache`. On rebuild after a code edit:
+
+- `./autogen.sh` runs only when `configure.ac` / `Makefile.am` changed
+- `./configure` runs only when configure inputs or flags changed
+- `make` only recompiles what is stale (plus ccache for repeated compiles)
+
+First build is still a full compile. Later `docker compose up --build …` after
+editing a `.cc` file should be much faster. To wipe the caches and force a clean
+build: `docker builder prune` (or delete the `undernet-*-work` / `*-ccache`
+cache mounts).
 
 # IRC Client Simulator
 
@@ -128,8 +229,3 @@ A: This is a burst connection mechanism in GNUworld which happen when it links t
    Just wait for it to complete and try again. Or you can change the setting `login_delay` in
    `etc/gnuworld/cservice.conf`, it's currently set to 5 seconds.
 
-Q: Why am I getting _"X (cservice@undernet.org): AUTHENTICATION FAILED as Admin (IPR)"_ when I try to
-   authenticate with the `x@channels.undernet.org` with the `Admin` user?
-
-A: Access IP restrictions are applied to the Admin user, to fix this, login to the `cservice-web`, and
-   change `Access IP restrictions (ACL+)` by adding the ip address `10.5.0.1`.
