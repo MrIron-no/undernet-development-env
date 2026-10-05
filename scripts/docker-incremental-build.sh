@@ -18,6 +18,8 @@ mkdir -p "$WORK" "$CCACHE_DIR"
 # Sync sources into the cached workdir without --delete so object files
 # from prior container builds survive. Never import host configure/make
 # outputs (those often carry a host --prefix and break make install).
+# '/config.h' is anchored to the tree root on purpose: ircu2 generates its
+# config.h there, while iauthd-c keeps a real source file at src/config.h.
 rsync -a \
   --exclude '.git/' \
   --exclude 'autom4te.cache/' \
@@ -32,7 +34,7 @@ rsync -a \
   --exclude 'config.status' \
   --exclude 'config.log' \
   --exclude 'config.cache' \
-  --exclude 'config.h' \
+  --exclude '/config.h' \
   --exclude 'include/setup.h' \
   --exclude 'libtool' \
   --exclude 'Makefile' \
